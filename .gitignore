@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local data and generated artifacts
+data/
+*.csv
+*.parquet
+*.jsonl
+
+# Secrets and local configs
+.env
+*.key
+*.pem
+service-account*.json
+credentials*.json
+
+# IDE/system
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+ETL_HOMEWORK.pdf
+iam-token.txt

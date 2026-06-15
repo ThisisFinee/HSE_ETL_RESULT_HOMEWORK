@@ -1,0 +1,23 @@
+{
+  "application_id": "loan_784512",
+  "customer": {
+    "customer_id": "cust_441",
+    "region": "DE-HE"
+  },
+  "loan": {
+    "amount": 15000,
+    "term_months": 36
+  },
+  "scoring": {
+    "score": 712,
+    "risk_level": "medium"
+  },
+  "documents": [
+    {
+      "type": "passport",
+      "status": "verified"
+    }
+  ],
+  "decision_status": "manual_review",
+  "submitted_at": "2026-05-01T10:15:11Z"
+}

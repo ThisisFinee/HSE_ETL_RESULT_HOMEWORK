@@ -1,0 +1,13 @@
+CREATE TABLE transactions_v2 (
+    call_id Utf8 NOT NULL,
+    call_time Timestamp NOT NULL,
+    client_id Utf8 NOT NULL,
+    region_code Utf8 NOT NULL,
+    campaign_type Utf8 NOT NULL,
+    call_status Utf8 NOT NULL,
+    client_response Utf8 NOT NULL,
+    duration_sec Uint32 NOT NULL,
+    follow_up_required Bool NOT NULL,
+    PRIMARY KEY (call_id)
+);
+
