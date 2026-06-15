@@ -1,116 +1,123 @@
 # ETL Homework: Yandex Cloud Data Platform
 
-Практическая работа по дисциплине «ETL-процессы»
+Практическая работа по дисциплине «ETL-процессы». В работе реализован контур обработки данных в Yandex Cloud: перенос данных из YDB в Object Storage через Data Transfer, batch-обработка файлов через Airflow и Yandex Data Processing, отправка Kafka-событий и подготовка PySpark-задания для раскладывания вложенного JSON в плоский вид.
 
-## Архитектура
+## Общая Архитектура
 
-```mermaid
-flowchart TD
-    ydb[Yandex Database] --> dataTransfer[Yandex Data Transfer]
-    dataTransfer --> objectStorage[Yandex Object Storage]
-    objectStorage --> sparkBatch[PySpark Batch Job]
-    airflow[Apache Airflow] --> dataProcessing[Yandex Data Processing]
-    dataProcessing --> sparkBatch
-    kafka[Managed Kafka Topic] --> sparkStreaming[PySpark Streaming Job]
-    dataProcessing --> sparkStreaming
-    sparkBatch --> processedStorage[Processed Data In Object Storage]
-    sparkStreaming --> processedStorage
-    processedStorage --> datalens[Yandex DataLens Dashboards]
-```
+Использованные сервисы Yandex Cloud:
 
-## Структура репозитория
+- Yandex Database;
+- Yandex Data Transfer;
+- Yandex Object Storage;
+- Managed Service for Apache Airflow;
+- Yandex Data Processing;
+- Managed Service for Apache Kafka;
+- Yandex DataLens.
+
+Общий список созданных сервисов:
+
+![Созданные сервисы Yandex Cloud](/docs/common/all_services.png)
+
+Структура Object Storage:
+
+![Папки в Object Storage](/docs/common/all_s3_folders.png)
+
+## Структура Репозитория
 
 - `sql/ydb/` - YQL-скрипты для таблицы `transactions_v2`.
-- `airflow/dags/` - DAG для создания кластера Yandex Data Processing, запуска PySpark и удаления кластера.
-- `spark/` - PySpark batch и streaming задания.
-- `scripts/` - генерация тестовых данных и отправка JSON-сообщений в Kafka.
-- `docs/` - инструкции по инфраструктуре, DataTransfer, Kafka и DataLens.
-- `data-samples/` - небольшие примеры данных и схемы.
-
-## Object Storage Layout
-
-```text
-raw/transactions_v2/       # выгрузка YDB -> Object Storage через Data Transfer
-raw/applications/          # входные batch-файлы не менее 50 Мб
-processed/applications/    # агрегаты PySpark batch
-processed/kafka_flat/      # плоский результат Kafka streaming
-checkpoints/kafka_flat/    # Spark checkpoint для streaming job
-scripts/                   # PySpark-скрипты для запуска из Data Processing
-```
+- `scripts/` - генераторы тестовых данных и CLI Kafka producer.
+- `airflow/dags/` - DAG-файлы для batch ETL, Kafka producer и Kafka flatten job.
+- `spark/` - PySpark batch и Kafka streaming задания.
+- `data-samples/` - маленькие примеры входных данных.
+- `docs/` - инструкции и скриншоты выполнения заданий.
 
 ## Задание 1: YDB -> Object Storage
 
-1. Создать YDB database в Yandex Cloud.
-2. Выполнить [`sql/ydb/create_transactions_v2.yql`](sql/ydb/create_transactions_v2.yql).
-3. Сгенерировать CSV объёмом не менее 30 Мб:
+Для первого задания была создана база YDB и таблица `transactions_v2` по схеме из задания. SQL-скрипт находится в [`sql/ydb/create_transactions_v2.yql`](sql/ydb/create_transactions_v2.yql).
+
+Данные были сгенерированы локально командой:
 
 ```bash
 python scripts/generate_transactions_v2.py --output data/transactions_v2.csv --target-mb 35
 ```
 
-4. Загрузить данные в YDB.
-5. Создать Data Transfer: source `YDB`, target `Object Storage`, путь `raw/transactions_v2/`.
-6. Запустить transfer и проверить появление файлов в bucket.
+Полученный файл объёмом около 35 МБ был загружен в таблицу `transactions_v2`. После этого был настроен Data Transfer из YDB в Object Storage с выходным форматом Parquet и сжатием Snappy. Для Parquet была увеличена группа строк, чтобы избежать ошибки превышения лимита row groups.
 
-Артефакты для отчёта: скриншот таблицы YDB, настройки transfer, успешный статус transfer, файлы в Object Storage.
+Созданная YDB:
+
+![Созданная YDB](/docs/1/YDB_created.png)
+
+Настроенный transfer в Object Storage:
+
+![Data Transfer to Object Storage](/docs/1/data_transfer_to_storage.png)
+
+Успешное выполнение Data Transfer:
+
+![Data Transfer success](/docs/1/data_transfer_success.png)
 
 ## Задание 2: Airflow + Data Processing + PySpark Batch
 
-1. Сгенерировать входной файл:
+Для второго задания был подготовлен входной файл `applications.csv` объёмом более 50 МБ:
 
 ```bash
 python scripts/generate_applications.py --output data/applications.csv --target-mb 60
 ```
 
-2. Загрузить файл в `s3://<bucket>/raw/applications/applications.csv`.
-3. Загрузить [`spark/applications_batch_etl.py`](spark/applications_batch_etl.py) в `s3://<bucket>/scripts/applications_batch_etl.py`.
-4. Настроить переменные Airflow из [`docs/airflow-variables.md`](docs/airflow-variables.md).
-5. Разместить [`airflow/dags/yandex_dataproc_etl_dag.py`](airflow/dags/yandex_dataproc_etl_dag.py) в Managed Service for Apache Airflow.
-6. Запустить DAG и проверить, что результат появился в `processed/applications/`, а кластер удалён.
+Файл был загружен в Object Storage в `raw/applications/`. PySpark-скрипт [`spark/applications_batch_etl.py`](spark/applications_batch_etl.py) был загружен в `scripts/` в Object Storage.
 
-PySpark job создаёт агрегаты:
+Для автоматизации был создан DAG [`airflow/dags/yandex_dataproc_etl_dag.py`](airflow/dags/yandex_dataproc_etl_dag.py). Он выполняет полный цикл:
 
-- `applications_by_region_status`
-- `risk_level_metrics`
-- `manual_review_by_channel`
-- `daily_processing_metrics`
+1. Создаёт временный кластер Yandex Data Processing.
+2. Запускает PySpark batch job.
+3. Записывает результат в `processed/applications/`.
+4. Удаляет временный кластер.
+
+PySpark job формирует витрины:
+
+- `clean_applications`;
+- `applications_by_region_status`;
+- `risk_level_metrics`;
+- `manual_review_by_channel`;
+- `daily_processing_metrics`.
+
+Успешный запуск DAG:
+
+![Successful Airflow DAG](./docs/2/success_dag.png)
+
+Результаты после выполнения DAG в Object Storage:
+
+![S3 after DAG](./docs/2/s3_after_dag.png)
+
+Пример очищенных данных в S3:
+
+![Clean application example in S3](./docs/2/clean_application_example_in_s3.png)
 
 ## Задание 3: Kafka + PySpark Streaming
 
-1. Создать Managed Service for Apache Kafka и topic, например `loan_applications`.
-2. Сгенерировать и отправить JSON-сообщений:
+Для третьего задания был создан Managed Kafka topic `loan_applications`. Для генерации сообщений подготовлены два варианта:
 
-```bash
-python scripts/produce_kafka_applications.py --bootstrap-servers <host:9091> --topic loan_applications --target-mb 25
-```
+- CLI-скрипт [`scripts/produce_kafka_applications.py`](scripts/produce_kafka_applications.py);
+- Airflow DAG [`airflow/dags/yandex_kafka_producer_dag.py`](airflow/dags/yandex_kafka_producer_dag.py), который сам отправляет JSON-сообщения в Kafka.
 
-3. Загрузить [`spark/kafka_streaming_flatten.py`](spark/kafka_streaming_flatten.py) в Object Storage.
-4. Запустить PySpark streaming job в Yandex Data Processing.
-5. Проверить плоский результат в `processed/kafka_flat/`.
+Сообщения имеют вложенную структуру: `application_id`, `customer`, `loan`, `scoring`, `documents`, `decision_status`, `submitted_at`. Объём отправки настроен через Airflow variable `KAFKA_PRODUCER_TARGET_MB`, для задания использовался объём не менее 20 МБ.
 
-## Задание 4: DataLens
+Созданный Kafka topic:
 
-DataLens подключается к подготовленным агрегатам. Если прямое чтение из Object Storage недоступно в вашем окружении, загрузите агрегаты в YDB или ClickHouse и подключите DataLens к этому хранилищу.
+![Kafka topic success](./docs/3/topic_success.png)
 
-Рекомендуемые графики:
+Успешная отправка сообщений в Kafka:
 
-- количество заявок по дням;
-- решения по регионам;
-- средний скоринг и сумма заявки по уровню риска;
-- доля manual review по каналам;
-- количество streaming-событий и распределение документов.
+![Kafka produce success](./docs/3/kafka_produce_success.png)
 
-Подробный чек-лист дашборда находится в [`docs/datalens-dashboard.md`](docs/datalens-dashboard.md).
+Для обработки Kafka-сообщений подготовлен PySpark-скрипт [`spark/kafka_streaming_flatten.py`](spark/kafka_streaming_flatten.py). Он читает сообщения из Kafka, парсит JSON по явной схеме, разворачивает массив `documents` и сохраняет плоский результат в Object Storage. Для запуска через Airflow подготовлен DAG [`airflow/dags/yandex_dataproc_kafka_flatten_dag.py`](airflow/dags/yandex_dataproc_kafka_flatten_dag.py), который создаёт Data Processing кластер, запускает PySpark job и удаляет кластер после выполнения.
 
-## Финальная проверка
+## Основные Скрипты
 
-- Репозиторий GitHub открыт публично.
-- В репозитории нет `.env`, ключей, токенов, JSON-файлов сервисных аккаунтов и больших датасетов.
-- README содержит описание всех четырёх заданий.
-- Все SQL, DAG и PySpark-скрипты сохранены в репозитории.
-- В `docs/screenshots/` добавлены скриншоты успешных запусков.
-- Неиспользуемые облачные ресурсы остановлены или удалены.
-
-## Вывод
-
-В результате работы получается end-to-end ETL/Streaming контур: данные переносятся из YDB в Object Storage, batch-файлы обрабатываются Spark-заданием под управлением Airflow, Kafka-события раскладываются в плоскую структуру, а итоговые агрегаты визуализируются в DataLens.
+- [`sql/ydb/create_transactions_v2.yql`](sql/ydb/create_transactions_v2.yql) - создание таблицы YDB.
+- [`scripts/generate_transactions_v2.py`](scripts/generate_transactions_v2.py) - генерация данных для Data Transfer.
+- [`scripts/generate_applications.py`](scripts/generate_applications.py) - генерация batch-файла.
+- [`airflow/dags/yandex_dataproc_etl_dag.py`](airflow/dags/yandex_dataproc_etl_dag.py) - batch ETL DAG.
+- [`airflow/dags/yandex_kafka_producer_dag.py`](airflow/dags/yandex_kafka_producer_dag.py) - Kafka producer DAG.
+- [`airflow/dags/yandex_dataproc_kafka_flatten_dag.py`](airflow/dags/yandex_dataproc_kafka_flatten_dag.py) - Kafka flatten DAG.
+- [`spark/applications_batch_etl.py`](spark/applications_batch_etl.py) - PySpark batch ETL.
+- [`spark/kafka_streaming_flatten.py`](spark/kafka_streaming_flatten.py) - PySpark Kafka flatten job.

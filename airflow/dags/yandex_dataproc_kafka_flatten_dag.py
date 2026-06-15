@@ -23,18 +23,32 @@ BUCKET = Variable.get("S3_BUCKET")
 SCRIPT_PATH = Variable.get("KAFKA_SCRIPT_PATH", default_var=f"s3a://{BUCKET}/scripts/kafka_streaming_flatten.py")
 OUTPUT_PATH = Variable.get("KAFKA_OUTPUT_PATH", default_var=f"s3a://{BUCKET}/processed/kafka_flat/")
 CHECKPOINT_PATH = Variable.get("KAFKA_CHECKPOINT_PATH", default_var=f"s3a://{BUCKET}/checkpoints/kafka_flat/")
+CHECKPOINT_RUN_PATH = f"{CHECKPOINT_PATH.rstrip('/')}/{{{{ ts_nodash }}}}"
 
 KAFKA_BOOTSTRAP_SERVERS = Variable.get("KAFKA_BOOTSTRAP_SERVERS")
 KAFKA_TOPIC = Variable.get("KAFKA_TOPIC", default_var="loan_applications")
 KAFKA_SECURITY_PROTOCOL = Variable.get("KAFKA_SECURITY_PROTOCOL", default_var="")
 KAFKA_SASL_MECHANISM = Variable.get("KAFKA_SASL_MECHANISM", default_var="")
 KAFKA_SASL_JAAS_CONFIG = Variable.get("KAFKA_SASL_JAAS_CONFIG", default_var="")
+KAFKA_USERNAME = Variable.get("KAFKA_USERNAME", default_var="")
+KAFKA_PASSWORD = Variable.get("KAFKA_PASSWORD", default_var="")
 
 CLUSTER_NAME = Variable.get("KAFKA_DATAPROC_CLUSTER_NAME", default_var="etl-homework-kafka-dataproc")
 WORKER_COUNT = int(Variable.get("KAFKA_DATAPROC_WORKER_COUNT", default_var="1"))
 RESOURCE_PRESET = Variable.get("DATAPROC_RESOURCE_PRESET", default_var="s2.small")
 
 SPARK_KAFKA_PACKAGE = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.2"
+
+
+def build_jaas_config() -> str:
+    if KAFKA_SASL_JAAS_CONFIG:
+        return KAFKA_SASL_JAAS_CONFIG
+    if KAFKA_USERNAME and KAFKA_PASSWORD:
+        return (
+            "org.apache.kafka.common.security.scram.ScramLoginModule required "
+            f'username="{KAFKA_USERNAME}" password="{KAFKA_PASSWORD}";'
+        )
+    return ""
 
 
 def build_job_args() -> list[str]:
@@ -46,19 +60,23 @@ def build_job_args() -> list[str]:
         "--output",
         OUTPUT_PATH,
         "--checkpoint",
-        CHECKPOINT_PATH,
+        CHECKPOINT_RUN_PATH,
         "--starting-offsets",
         "earliest",
         "--run-mode",
         "once",
+        "--timeout-seconds",
+        "900",
     ]
 
     if KAFKA_SECURITY_PROTOCOL:
         args.extend(["--kafka-security-protocol", KAFKA_SECURITY_PROTOCOL])
     if KAFKA_SASL_MECHANISM:
         args.extend(["--kafka-sasl-mechanism", KAFKA_SASL_MECHANISM])
-    if KAFKA_SASL_JAAS_CONFIG:
-        args.extend(["--kafka-sasl-jaas-config", KAFKA_SASL_JAAS_CONFIG])
+
+    jaas_config = build_jaas_config()
+    if jaas_config:
+        args.extend(["--kafka-sasl-jaas-config", jaas_config])
 
     return args
 
@@ -104,7 +122,10 @@ with DAG(
         main_python_file_uri=SCRIPT_PATH,
         args=build_job_args(),
         properties={
+            "spark.submit.packages": SPARK_KAFKA_PACKAGE,
             "spark.jars.packages": SPARK_KAFKA_PACKAGE,
+            "spark.jars.repositories": "https://repo1.maven.org/maven2",
+            "spark.sql.streaming.forceDeleteTempCheckpointLocation": "true",
         },
     )
 
